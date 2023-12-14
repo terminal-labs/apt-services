@@ -2,8 +2,8 @@ import os
 import sys
 import uuid
 import hashlib
-import socketserver
 import socket
+import socketserver
 from pathlib import Path
 from shutil import copyfile
 from shutil import move
@@ -20,9 +20,9 @@ rdict = {
     "httpversion": False,
     "host": False,
     "useragent": False,
+    "name": False,
     "raw": False,
 }
-
 
 def dir_exists(path):
     return os.path.isdir(path)
@@ -37,6 +37,14 @@ def dir_delete(path):
     except FileNotFoundError:
         pass
 
+def dir_listfiles(path):
+    list_of_files = [f for f in os.listdir(path) if os.path.isfile("data/" + f)]
+    return list_of_files
+
+def dir_listdirs(path):
+    list_of_dirs = [d for d in os.listdir(path) if os.path.isdir("data/" + d)]
+    return list_of_dirs
+ 
 def file_delete(path):
     try:
         os.remove(path)
@@ -52,17 +60,20 @@ def file_rename(src, dst):
 def file_move(src, dst):
     move(src, dst)
 
+def file_sha256sum(filename):
+    with open(filename, 'rb', buffering=0) as f:
+        return hashlib.file_digest(f, 'sha256').hexdigest()
+
 def to_byte(data):
-    return data
+    return bytes(data.encode('utf-8'))
 
 def to_str(data):
-    encoding = 'utf-8'
-    return data.decode(encoding)
+    return str(data.decode('utf-8'))
 
 def get_user_home():
     return str(Path.home())
 
-def download_cache_object(rdict):
+def download_to_buffer(rdict):
     request = rdict["raw"] 
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.connect(("archive.ubuntu.com", 80))
@@ -77,11 +88,8 @@ def download_cache_object(rdict):
             file_to_write.write(data)
             chunks.append(data)
     print(chunks[0]) 
-           
-    
-    
 
-def prep_cache_object(rdict):
+def prep_object_dir(rdict):
     s = rdict["get"]
     hash_object = hashlib.sha256(bytes(s.encode('utf-8')))
     hex_dig = hash_object.hexdigest()
@@ -95,57 +103,67 @@ def prep_cache_object(rdict):
     config['DEFAULT']['name'] = rdict["get"].split('/')[-1]
     with open("data/" + str(hex_dig) + '/FILE.INI', 'w') as configfile:
         config.write(configfile)
-    download_cache_object(rdict)
-
-def request_pattern(line, search):
-    line = line.strip()
-    if search == "get":
-        if line.startswith(convention["get"]):
-            if " " in line:
-                return line[len(convention["get"]):].split(" ")[0]
-            else:
-                return line[len(convention["get"]):]
-    if search == "httpversion":
-        if line.startswith(convention["get"]):
-            if " " in line:
-                substr = line[len(convention["httpversion"]):].split(" ")[1]
-                if substr.startswith(convention["httpversion"]):
-                    return substr
-    if search == "host":
-        if line.startswith(convention["host"]):
-            return line[len(convention["host"]):]
-    if search == "useragent":
-        if line.startswith(convention["useragent"]):
-            return line[len(convention["useragent"]):]
+    print(dir_listdirs("data"))
+    print(dir_listfiles("data"))
 
 def request_serialise(r):
+    def request_dict_verify(rdict):
+        return rdict
+
+    def request_pattern(line, search):
+        line = line.strip()
+        if search == "get":
+            if line.startswith(convention["get"]):
+                if " " in line:
+                    return line[len(convention["get"]):].split(" ")[0]
+                else:
+                    return line[len(convention["get"]):]
+        if search == "httpversion":
+            if line.startswith(convention["get"]):
+                if " " in line:
+                    substr = line[len(convention["httpversion"]):].split(" ")[1]
+                    if substr.startswith(convention["httpversion"]):
+                        return substr
+        if search == "name":
+            if line.startswith(convention["get"]):
+                if " " in line:
+                    substr = line[len(convention["get"]):].split(" ")[0]
+                    return substr.split('/')[-1]
+        if search == "host":
+            if line.startswith(convention["host"]):
+                return line[len(convention["host"]):]
+        if search == "useragent":
+            if line.startswith(convention["useragent"]):
+                return line[len(convention["useragent"]):]
+    
     global rdict
     r = to_str(r)
     rdict_local = dict(rdict)
-    rdict_local["raw"] = r + "\r\n\r\n"
+    rdict_local["raw"] = str(r)
     lines = r.split('\n')
     for line in lines:
         if line.startswith(convention["get"]):
-            rdict_local["get"] = request_pattern(line, "get")
-            rdict_local["httpversion"] = request_pattern(line, "httpversion")
+            rdict_local["get"] = str(request_pattern(line, "get"))
+            rdict_local["name"] = str(request_pattern(line, "name"))
+            rdict_local["httpversion"] = str(request_pattern(line, "httpversion"))
         if line.startswith(convention["host"]):
-            rdict_local["host"] = request_pattern(line, "host")
-        if line.startswith("User-Agent: "):
-            rdict_local["useragent"] = request_pattern(line, "useragent")
+            rdict_local["host"] = str(request_pattern(line, "host"))
+        if line.startswith(convention["useragent"]):
+            rdict_local["useragent"] = str(request_pattern(line, "useragent"))
     return rdict_local
+
+def response_serialise(r):
+    pass
 
 class Handler_TCPServer(socketserver.BaseRequestHandler):
     def handle(self):
-        self.data = self.request.recv(1024).strip()
+        self.data = self.request.recv(1024)
         rdict = request_serialise(self.data)
-        prep_cache_object(rdict)
-        clientsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        clientsocket.connect(('127.0.0.1', 3142))
-        clientsocket.send(self.data)
-        data = clientsocket.recv(1024)                
+        print(rdict)
+        prep_object_dir(rdict)
         self.request.sendall(b"HTTP/1.1 304 Not Modified\r\nDate: Wed, 13 Dec 2023 10:43:33 GMT\r\nServer: Debian Apt-Cacher NG/3.7.4\r\n\r\n")
 
-if __name__ == "__main__":
+def main():
     try:
         dir_create("data")
         HOST, PORT = "0.0.0.0", 2002
@@ -157,4 +175,5 @@ if __name__ == "__main__":
         tcp_server.server_close()
         sys.exit(0)
 
-
+if __name__ == "__main__":
+    main()
